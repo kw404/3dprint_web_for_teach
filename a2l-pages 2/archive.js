@@ -1,0 +1,20 @@
+import {zipSync,strToU8} from './vendor/fflate.js';
+const xml=s=>String(s).replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
+export function archive({gcode,stats,profile,settings,stl,png,name}){
+ const a=new DataView(stl),n=a.getUint32(80,true),verts=[],faces=[],lookup=new Map();
+ for(let i=0;i<n;i++){let ids=[];for(let j=0;j<3;j++){const v=[0,1,2].map(k=>a.getFloat32(84+i*50+12+j*12+k*4,true).toFixed(6)),key=v.join(',');if(!lookup.has(key)){lookup.set(key,verts.length);verts.push(`<vertex x="${v[0]}" y="${v[1]}" z="${v[2]}"/>`);}ids.push(lookup.get(key));}faces.push(`<triangle v1="${ids[0]}" v2="${ids[1]}" v3="${ids[2]}"/>`);}
+ const grams=stats.filament_mm*Math.PI*1.75**2/4/1000*1.24;
+ const config={...profile,layer_height:String(settings.layer),wall_loops:String(settings.walls),sparse_infill_density:settings.infill+'%',enable_support:settings.support?'1':'0',brim_type:settings.brim?'outer_only':'no_brim',printer_model:'Bambu Lab A2L',printer_settings_id:'Bambu Lab A2L 0.4 nozzle',filament_settings_id:['Generic PLA @BBL A2L'],curr_bed_type:'Textured PEI Plate'};
+ const files={
+ '[Content_Types].xml':'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="gcode" ContentType="text/x.gcode"/></Types>',
+ '_rels/.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>',
+ '3D/3dmodel.model':`<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Application">A2L Classroom browser edition</metadata><resources><object id="1" type="model"><mesh><vertices>${verts.join('')}</vertices><triangles>${faces.join('')}</triangles></mesh></object></resources><build><item objectid="1"/></build></model>`,
+ 'Metadata/project_settings.config':JSON.stringify(config),
+ 'Metadata/plate_1.gcode':gcode,
+ 'Metadata/plate_1.gcode.md5':globalThis.SparkMD5.hash(gcode),
+ 'Metadata/model_settings.config':`<config><object id="1"><metadata key="name" value="${xml(name)}"/><metadata key="extruder" value="1"/></object><plate><metadata key="plater_id" value="1"/><metadata key="gcode_file" value="Metadata/plate_1.gcode"/><metadata key="thumbnail_file" value="Metadata/plate_1.png"/><metadata key="bed_type" value="Textured PEI Plate"/><model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="1"/></model_instance></plate></config>`,
+ 'Metadata/slice_info.config':`<config><header><header_item key="X-BBL-Client-Type" value="slicer"/></header><plate><metadata key="index" value="1"/><metadata key="nozzle_diameters" value="0.4"/><metadata key="prediction" value="${Math.round(stats.time_estimate)}"/><metadata key="weight" value="${grams.toFixed(2)}"/><metadata key="outside" value="false"/><metadata key="support_used" value="${settings.support}"/><metadata key="filament_maps" value="1"/><object identify_id="1" name="${xml(name)}" skipped="false"/><filament id="1" tray_info_idx="GFL99" type="PLA" color="#728D89" used_m="${stats.filament_mm/1000}" used_g="${grams.toFixed(2)}"/><nozzle id="0" extruder_id="1" nozzle_diameter="0.4" volume_type="Standard"/></plate></config>`,
+ 'Metadata/classroom-verification.json':JSON.stringify({engine:'three-slicer 0.3.5',browserOnly:true,settings,stats:{layers:stats.layers,filament_mm:stats.filament_mm},physicalPrintTested:false,machineIntegration:'experimental'})};
+ const bytes=Object.fromEntries(Object.entries(files).map(([k,v])=>[k,strToU8(v)]));bytes['Metadata/plate_1.png']=Uint8Array.from(atob(png),c=>c.charCodeAt(0));
+ return {bytes:zipSync(bytes,{level:6}),grams};
+}

@@ -1,0 +1,36 @@
+# A2L 切片教室：GitHub Pages 版
+
+這是純靜態網站；STL、切片運算、預覽及 ZIP 封裝均在學生瀏覽器執行，不需要 Python、Bambu Studio 或切片伺服器。模型不會上傳。需透過 HTTPS 或 localhost 開啟，不能直接雙擊 index.html。
+
+## 自行發布（不必執行建置）
+
+1. 解壓縮網站包，把 a2l-pages **資料夾內的內容**放到 GitHub repository 根目錄，確認根目錄有 index.html、app.js、vendor 等。
+2. GitHub repository → Settings → Pages → Source 選 Deploy from a branch。
+3. Branch 選 main、資料夾選 / (root)，儲存。發布完成後把 GitHub 提供的網址給學生。
+4. 亦可選 GitHub Actions 作為 Source，使用隨附的 .github/workflows/pages.yml；上述兩種方式擇一。
+
+不需要設定 API 網址或金鑰。所有資源使用相對路徑，可部署在帳號首頁或 /repository/ 子路徑。
+
+## 已完成與限制
+
+- STL 匯入、旋轉、縮放、置中；固定 A2L、0.4 mm、Generic PLA、紋理 PEI。
+- Web Worker + WebAssembly 真實切片，支援取消、層高、牆壁、填充、支撐及外側裙邊。
+- 圓角截面的線材預覽；灰綠為模型、灰褐為支撐，依引擎數值角色匹配，不能由 unsupported 等文字推測。
+- 產生含 G-code 的 .gcode.3mf；固定機器啟動／結束程序由本機官方 A2L 設定衍生。
+- **這是 A2L 輸出測試版，尚未完成實機列印與所有 3MF 消費端相容性驗證。不是完整 Bambu Studio；路徑、支撐策略和估時可能不同。不能宣稱已驗證可直接交給全班列印。**
+- 某些細小模型及層高／支撐組合仍會產生空層；遇到空層或超界會停止匯出。估時不含完整機器準備動作。
+- 模型高度限制 324.5 mm，預留結束抬升；最大 300,000 三角形／20 MB。
+- 支撐分類已以 101.stl 測試：關閉支撐時 16,444 段全部為模型；開啟支撐時 5,233 段為支撐，16,444 段仍為模型。
+- 已在純靜態子路徑測試方塊 100 層與 101.stl 638 層；沒有呼叫本機切片 API。
+
+原先由 Bambu Studio 原生引擎切片的版本另保留，兩者不是同一個切片引擎。
+
+## 原始碼與授權
+
+網站自身原始碼隨網站提供，AGPL-3.0-or-later，見 LICENSE.txt。
+
+- three-slicer 0.3.5，AGPL-3.0-or-later，來源：https://github.com/kimgh06/Three_Slicer/tree/917b79d3bda5beb83d55fa2de828ffa8e33e8a02 。精確來源快照附於 sources/；授權與第三方說明在 vendor/engine/。
+- Bambu Studio A2L 設定來源：https://github.com/bambulab/BambuStudio ，本版使用已安裝 02.08.02.61 的設定。設定內容在 a2l-profile.json，機器程序生成器在 tools/build_profile.py。
+- Three.js、fflate、SparkMD5 的授權位於 vendor/。
+
+網頁所有 JavaScript 均為可讀原始碼；僅第三方引擎含編譯後的 WASM。保留來源及授權檔後再公開發布。
