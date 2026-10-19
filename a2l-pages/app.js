@@ -1,3 +1,4 @@
+import {bedPlanes} from './bed-planes.js';
 import {archive} from './archive.js';
 import {projectArchive,readProject} from './project.js?v=project2';
 import {overhangSummary} from './geometry-check.js';
@@ -7,7 +8,7 @@ import {STLLoader} from './vendor/STLLoader.js';
 const $=id=>document.getElementById(id), loader=new STLLoader();
 const saveButton=document.createElement('button');saveButton.id='saveProject';saveButton.textContent='儲存專案 .3mf';saveButton.title='不必先切片；保存模型、方向與設定，日後繼續調整';$('slice').before(saveButton);
 $('file').accept='.stl,.3mf';document.querySelector('label[for="file"]').title='開啟 STL 或本網站儲存的 3MF 專案';
-document.querySelector('#bedTool small').textContent='選面貼底';$('bedTool').title='點選外側平面或斜面，將該面旋轉朝向列印板';
+document.querySelector('#bedTool small').textContent='選面貼底';$('bedTool').title='選擇自動偵測的貼底平面，可跨越兩條邊或開口';
 const warningBox=document.createElement('div');warningBox.id='overhangNotice';warningBox.hidden=true;warningBox.setAttribute('role','status');
 warningBox.innerHTML='<strong>可能懸空</strong><p id="overhangText"></p><button id="enableSupport">啟用支撐</button><button id="pickBottom">選一面貼底</button>';
 $('viewport').append(warningBox);
@@ -101,7 +102,7 @@ $('slice').onclick=async()=>{
  const settings={layer:+$('layer').value,infill:+$('infill').value,walls:+$('walls').value,support:$('support').checked,brim:$('brim').checked};
  if(!Number.isInteger(settings.infill)||settings.infill<0||settings.infill>80||!Number.isInteger(settings.walls)||settings.walls<2||settings.walls>6){status('填充率需為 0–80；牆壁圈數需為 2–6。');return;}
  invalidate();busy=true;lockInputs(true);updateButton();$('progress').hidden=false;$('progress').value=1;status('在你的瀏覽器內切片，模型不會上傳…');
- const stl=binarySTL(),png=thumbnail(),worker=new Worker(new URL('./slice-worker.js?v=color2',import.meta.url),{type:'module'});
+ const stl=binarySTL(),png=thumbnail(),worker=new Worker(new URL('./slice-worker.js?v=topology1',import.meta.url),{type:'module'});
  $('slice').textContent='瀏覽器切片中…';$('cancel').hidden=false;let timer;
  try{
   const result=await new Promise((resolve,reject)=>{
@@ -147,7 +148,30 @@ $('enableSupport').onclick=()=>{if(busy)return;$('support').checked=true;$('supp
 $('reset').addEventListener('click',updateOverhang);
 function clearFaceOverlay(){if(faceOverlay){stage.remove(faceOverlay);faceOverlay.geometry.dispose();faceOverlay.material.dispose();faceOverlay=null;}lastHoverFace=-1;}
 function cancelFace(){selectingFace=false;clearFaceOverlay();$('bedTool').classList.remove('selected');faceHint.hidden=true;renderer.domElement.style.cursor='';}
-function startFace(){if(!mesh||busy)return;if(selectingFace){cancelFace();return;}switchMode('prepare');$('transform').hidden=true;selectingFace=true;faceHint.hidden=false;$('bedTool').classList.add('selected');renderer.domElement.style.cursor='crosshair';status('點選要朝向底板的模型表面；Esc 可取消。');}
+let planeChoices=[],candidateMode=false;
+function previewBedPlane(){
+ clearFaceOverlay();const p=planeChoices[+$('planeChoice').value];if(!p)return;
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(p.positions,3));
+ faceOverlay=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:'#d3b878',transparent:true,opacity:.48,side:THREE.DoubleSide,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-3,polygonOffsetUnits:-3}));
+ mesh.updateMatrix();faceOverlay.matrixAutoUpdate=false;faceOverlay.matrix.copy(mesh.matrix);stage.add(faceOverlay);
+}
+function applyBedNormal(localNormal){
+ mesh.updateMatrix();const normal=localNormal.clone().applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(mesh.matrix)).normalize();
+ const rotation=new THREE.Quaternion().setFromUnitVectors(normal,new THREE.Vector3(0,0,-1)).multiply(mesh.quaternion),angles=new THREE.Euler().setFromQuaternion(rotation,'XYZ');
+ ['rx','ry','rz'].forEach((id,i)=>$(id).value=THREE.MathUtils.radToDeg([angles.x,angles.y,angles.z][i]).toFixed(5));
+ cancelFace();transform();$('task2').classList.add('done');status('已依選取平面旋轉並貼底；請重新切片。');
+}
+function startFace(){
+ if(!mesh||busy)return;if(selectingFace){cancelFace();return;}switchMode('prepare');$('transform').hidden=true;
+ try{planeChoices=bedPlanes(mesh.geometry.attributes.position.array);}catch(e){status('無法建立候選平面：'+e.message);return;}
+ if(!planeChoices.length){status('沒有可用的貼底平面。');return;}
+ candidateMode=true;selectingFace=true;faceHint.hidden=false;$('bedTool').classList.add('selected');
+ faceHint.innerHTML='<b>選擇貼底平面</b><p>黃色區域是候選平面，可跨越兩條邊或開口；不會填補模型。請旋轉視角確認。</p><select id="planeChoice" aria-label="候選貼底平面"></select><button id="applyPlane">套用這個平面</button><button id="directFace">直接選面</button><button id="cancelFace">取消</button>';
+ planeChoices.forEach((p,i)=>{const option=document.createElement('option');option.value=i;option.textContent=`平面 ${i+1} · 範圍 ${Math.round(p.area)} mm²`;$('planeChoice').append(option);});
+ $('planeChoice').onchange=previewBedPlane;$('applyPlane').onclick=()=>applyBedNormal(planeChoices[+$('planeChoice').value].normal);$('cancelFace').onclick=cancelFace;
+ $('directFace').onclick=()=>{candidateMode=false;clearFaceOverlay();faceHint.innerHTML='點選模型表面，將該面朝下。<button id="cancelFace">取消</button>';$('cancelFace').onclick=cancelFace;};
+ previewBedPlane();status('切換候選平面觀察黃色區域，再按「套用這個平面」。');
+}
 $('bedTool').onclick=startFace;$('pickBottom').onclick=startFace;$('cancelFace').onclick=cancelFace;
 window.addEventListener('keydown',e=>{if(e.key==='Escape')cancelFace();});
 const raycaster=new THREE.Raycaster();
@@ -161,9 +185,9 @@ function highlightFace(hit){
 }
 let pointerStart=null;
 renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});
-renderer.domElement.addEventListener('pointermove',e=>{if(selectingFace&&mesh&&!busy)highlightFace(hitFace(e));});
+renderer.domElement.addEventListener('pointermove',e=>{if(selectingFace&&!candidateMode&&mesh&&!busy)highlightFace(hitFace(e));});
 renderer.domElement.addEventListener('pointerup',e=>{
- if(!selectingFace||!mesh||busy||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>5)return;
+ if(!selectingFace||candidateMode||!mesh||busy||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>5)return;
  const hit=hitFace(e);if(!hit)return;
  mesh.updateMatrix();const normal=hit.face.normal.clone().applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(mesh.matrix)).normalize();
  const rotation=new THREE.Quaternion().setFromUnitVectors(normal,new THREE.Vector3(0,0,-1)).multiply(mesh.quaternion);

@@ -5,3 +5,5 @@
 #result{max-height:calc(100% - 55px);overflow:auto}#retrySupport,#retryWarnings{width:100%;margin-top:10px;white-space:normal;font-size:11px}#retryWarnings{border-color:#9d8c73;color:#d2bfa2;background:#39352f}
 
 .panel-heading{display:flex;align-items:center;gap:8px;justify-content:space-between}.panel-heading .panel-toggle{margin:0 0 0 auto!important;padding:3px 7px!important;font-size:11px}.panel-collapsed>:not(.panel-heading){display:none!important}#result.panel-collapsed{width:auto;min-width:180px}#overhangNotice.panel-collapsed{width:auto;min-width:180px}.panel-collapsed .panel-heading{margin-bottom:0}
+
+#faceHint p{margin:6px 0;max-width:430px}#planeChoice{display:block;width:100%;margin:8px 0}#faceHint button{margin:3px;font-size:12px}#faceHint{max-height:65%;overflow:auto}
