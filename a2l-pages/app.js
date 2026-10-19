@@ -1,8 +1,26 @@
 import {archive} from './archive.js';
+import {projectArchive,readProject} from './project.js?v=project2';
+import {overhangSummary} from './geometry-check.js';
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/OrbitControls.js';
 import {STLLoader} from './vendor/STLLoader.js';
 const $=id=>document.getElementById(id), loader=new STLLoader();
+const saveButton=document.createElement('button');saveButton.id='saveProject';saveButton.textContent='儲存專案 .3mf';saveButton.title='不必先切片；保存模型、方向與設定，日後繼續調整';$('slice').before(saveButton);
+$('file').accept='.stl,.3mf';document.querySelector('label[for="file"]').title='開啟 STL 或本網站儲存的 3MF 專案';
+document.querySelector('#bedTool small').textContent='選面貼底';$('bedTool').title='點選外側平面或斜面，將該面旋轉朝向列印板';
+const warningBox=document.createElement('div');warningBox.id='overhangNotice';warningBox.hidden=true;warningBox.setAttribute('role','status');
+warningBox.innerHTML='<strong>可能懸空</strong><p id="overhangText"></p><button id="enableSupport">啟用支撐</button><button id="pickBottom">選一面貼底</button>';
+$('viewport').append(warningBox);
+// Keep the title visible so a collapsed panel can always be reopened.
+function collapsiblePanel(panel,heading,label){
+ const button=document.createElement('button');button.className='panel-toggle';button.type='button';
+ let collapsed=false;const update=()=>{panel.classList.toggle('panel-collapsed',collapsed);button.textContent=collapsed?'展開':'收合';button.setAttribute('aria-expanded',String(!collapsed));button.setAttribute('aria-label',(collapsed?'展開':'收合')+label);};
+ button.onclick=()=>{collapsed=!collapsed;update();};heading.classList.add('panel-heading');heading.append(button);update();
+}
+collapsiblePanel($('result'),$('result').querySelector('.result-title'),'切片結果');
+const warningHeading=document.createElement('div');warningHeading.append(warningBox.querySelector('strong'));warningBox.prepend(warningHeading);
+collapsiblePanel(warningBox,warningHeading,'懸空警告');
+const faceHint=document.createElement('div');faceHint.id='faceHint';faceHint.hidden=true;faceHint.innerHTML='點選要貼底的外側平面或斜面；黃色面會旋轉成水平朝下。<button id="cancelFace">取消</button>';$('viewport').append(faceHint);
 const viewport=$('viewport'), scene=new THREE.Scene();scene.background=new THREE.Color('#535359');
 const camera=new THREE.PerspectiveCamera(38,1,.1,3000);
 let renderer;
@@ -17,14 +35,15 @@ const gridGeometry=new THREE.BufferGeometry();gridGeometry.setAttribute('positio
 const outline=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,.1),new THREE.Vector3(330,0,.1),new THREE.Vector3(330,320,.1),new THREE.Vector3(0,320,.1)]),new THREE.LineBasicMaterial({color:'#777781'}));stage.add(outline);
 const mat=new THREE.MeshLambertMaterial({color:'#728d89',side:THREE.DoubleSide});
 let mesh=null, bounds=null, valid=true, ready=false,busy=false,mode='prepare',layers=[],job=null,lastResult=null,playTimer=null,previewLines=null,modelName='',sampleIndex=0;
+let selectingFace=false,faceOverlay=null,lastHoverFace=-1,overhang=null;
 function status(t){$('status').textContent=t;}
 function disposePreview(){if(previewLines){stage.remove(previewLines);previewLines.geometry.dispose();previewLines.material.dispose();previewLines=null;}}
 function iso(){camera.up.set(0,1,0);camera.position.set(480,370,230);controls.target.set(165,0,-160);controls.update();}
 iso();
 const resize=()=>{let w=viewport.clientWidth,h=viewport.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();};new ResizeObserver(resize).observe(viewport);
 function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera);}animate();
-function lockInputs(value){for(const id of ['layer','infill','walls','support','brim','scale','rx','ry','rz','px','py','file','sample','delete','reset','center','moveTool','rotateTool','scaleTool','bedTool'])$(id).disabled=value;}
-function updateButton(){$('slice').disabled=!ready||!mesh||!valid||busy;}
+function lockInputs(value){for(const id of ['layer','infill','walls','support','brim','scale','rx','ry','rz','px','py','file','sample','delete','reset','center','moveTool','rotateTool','scaleTool','bedTool','enableSupport','pickBottom'])$(id).disabled=value;}
+function updateButton(){$('slice').disabled=!ready||!mesh||!valid||busy;$('saveProject').disabled=!mesh||!valid||busy;}
 function stopPlay(){clearInterval(playTimer);playTimer=null;$('play').textContent='▶ 播放';}
 function switchMode(next){if(next==='preview'&&!layers.length)return;mode=next;stopPlay();$('prepare').classList.toggle('active',next==='prepare');$('preview').classList.toggle('active',next==='preview');$('transform').hidden=next!=='prepare';$('layerPanel').hidden=next!=='preview';if(mesh)mesh.visible=next==='prepare';if(next==='preview')drawLayer();else disposePreview();}
 let downloadURL=null;
@@ -73,7 +92,7 @@ function drawLayer(){
  stage.add(previewLines);$('task4').classList.add('done');
 }
 $('layerSlider').oninput=drawLayer;$('singleLayer').onchange=drawLayer;$('play').onclick=()=>{if(playTimer){stopPlay();return;}if(+$('layerSlider').value>=layers.length)$('layerSlider').value=1;$('play').textContent='Ⅱ 暫停';playTimer=setInterval(()=>{let v=+$('layerSlider').value;if(v>=layers.length){stopPlay();return;}$('layerSlider').value=v+1;drawLayer();},130);};
-function binarySTL(){const g=localGeometry(),a=g.attributes.position.array,n=a.length/9,buf=new ArrayBuffer(84+n*50),v=new DataView(buf);v.setUint32(80,n,true);for(let i=0;i<n;i++)for(let j=0;j<9;j++)v.setFloat32(84+i*50+12+j*4,a[i*9+j],true);g.dispose();return buf;}
+function binarySTL(transformed=true){const g=transformed?localGeometry():mesh.geometry.clone(),a=g.attributes.position.array,n=a.length/9,buf=new ArrayBuffer(84+n*50),v=new DataView(buf);v.setUint32(80,n,true);for(let i=0;i<n;i++)for(let j=0;j<9;j++)v.setFloat32(84+i*50+12+j*4,a[i*9+j],true);g.dispose();return buf;}
 function b64(buffer){const bytes=new Uint8Array(buffer);let s='';for(let i=0;i<bytes.length;i+=32768)s+=String.fromCharCode(...bytes.subarray(i,i+32768));return btoa(s);}
 function thumbnail(){renderer.render(scene,camera);const c=document.createElement('canvas');c.width=512;c.height=512;const ctx=c.getContext('2d');ctx.fillStyle='#535359';ctx.fillRect(0,0,512,512);const aspect=renderer.domElement.width/renderer.domElement.height;ctx.drawImage(renderer.domElement,0,(512-512/aspect)/2,512,512/aspect);return c.toDataURL('image/png').split(',')[1];}
 function timeLabel(seconds){const minutes=Math.round(seconds/60);return minutes>=60?`${Math.floor(minutes/60)} 時 ${minutes%60} 分`:`${minutes} 分`;}
@@ -98,7 +117,7 @@ $('slice').onclick=async()=>{
   $('preview').disabled=false;$('layerSlider').max=layers.length;$('layerSlider').value=layers.length;$('result').hidden=false;
   $('time').textContent=timeLabel(result.stats.time_estimate);$('weight').textContent=packed.grams.toFixed(1)+' g';
   $('comparison').textContent='瀏覽器獨立切片完成；估時未含完整機器準備程序。';
-  $('engineWarning').textContent='A2L 輸出測試版：與 Bambu Studio 的路徑不同，尚未經實機列印驗證。';
+  $('engineWarning').textContent=(overhang?.hasOverhang?(settings.support?'模型有懸空面，已啟用支撐；請逐層確認是否覆蓋所有懸空區域。':'注意：模型有可能懸空的面，目前未啟用支撐。請調整方向或啟用支撐後重新切片。')+' ':'')+'A2L 輸出測試版：尚未經實機列印驗證。';
   $('task3').classList.add('done');switchMode('preview');$('fit').click();status('切片完成：'+layers.length+' 層，模型未離開這台電腦。');
  }catch(e){status('切片未完成：'+e.message);layers=[];$('preview').disabled=true;}
  finally{clearTimeout(timer);worker.terminate();busy=false;lockInputs(false);$('cancel').hidden=true;$('progress').hidden=true;$('slice').textContent='切片單盤';updateButton();}
@@ -107,9 +126,71 @@ ready=typeof WebAssembly==='object'&&typeof Worker==='function';$('engineStatus'
 
 for(const button of document.querySelectorAll('[data-panel]'))button.onclick=()=>{for(const b of document.querySelectorAll('[data-panel]')){b.classList.toggle('selected',b===button);b.setAttribute('aria-selected',String(b===button));$('panel-'+b.dataset.panel).hidden=b!==button;}};
 for(const [id,focus] of [['moveTool','px'],['rotateTool','rx'],['scaleTool','scale']])$(id).onclick=()=>{if(mode!=='prepare'||!mesh)return;$('transform').hidden=false;$(focus).focus();};
-$('closeTransform').onclick=()=>{$('transform').hidden=true;};$('bedTool').onclick=()=>{if(mesh)transform();};
+$('closeTransform').onclick=()=>{$('transform').hidden=true;};
 for(const id of ['layer','infill','walls','support','brim'])$(id).addEventListener('change',()=>{$('presetName').textContent='0.20mm · A2L 瀏覽器版 • 已修改';});
 $('reset').addEventListener('click',()=>{$('presetName').textContent='0.20mm · A2L 瀏覽器版';});
 
 for(const id of ["scale","rx","ry","rz","px","py"])$(id).oninput=$(id).onchange;
 for(const id of ["infill","walls"])$(id).oninput=()=>{invalidate();$("presetName").textContent="0.20mm · A2L 瀏覽器版 • 已修改";status("列印參數已更新，請重新切片。");};
+
+function updateOverhang(){
+ if(!mesh){overhang=null;warningBox.hidden=true;return;}
+ const g=localGeometry();overhang=overhangSummary(g.attributes.position.array);g.dispose();
+ warningBox.hidden=!overhang.hasOverhang;
+ if(overhang.hasOverhang)$('overhangText').textContent=`偵測到約 ${overhang.area.toFixed(0)} mm² 朝下且超過 45° 的表面（Z ${overhang.low.toFixed(1)}–${overhang.high.toFixed(1)} mm）。`+($('support').checked?'已啟用支撐，仍需檢查生成結果。':'目前未啟用支撐，請調整方向或啟用支撐。')+' 此為幾何提醒，橋接或下方已有模型的區域也可能被標示。';
+ $('enableSupport').hidden=$('support').checked;
+}
+const originalTransform=transform;transform=function(){originalTransform();updateOverhang();};
+for(const id of ['support','layer'])$(id).addEventListener('change',updateOverhang);
+const originalDelete=$('delete').onclick;$('delete').onclick=()=>{cancelFace();originalDelete();updateOverhang();};
+$('enableSupport').onclick=()=>{if(busy)return;$('support').checked=true;$('support').dispatchEvent(new Event('change'));status('已啟用支撐，請重新切片並檢查懸空位置。');};
+$('reset').addEventListener('click',updateOverhang);
+function clearFaceOverlay(){if(faceOverlay){stage.remove(faceOverlay);faceOverlay.geometry.dispose();faceOverlay.material.dispose();faceOverlay=null;}lastHoverFace=-1;}
+function cancelFace(){selectingFace=false;clearFaceOverlay();$('bedTool').classList.remove('selected');faceHint.hidden=true;renderer.domElement.style.cursor='';}
+function startFace(){if(!mesh||busy)return;if(selectingFace){cancelFace();return;}switchMode('prepare');$('transform').hidden=true;selectingFace=true;faceHint.hidden=false;$('bedTool').classList.add('selected');renderer.domElement.style.cursor='crosshair';status('點選要朝向底板的模型表面；Esc 可取消。');}
+$('bedTool').onclick=startFace;$('pickBottom').onclick=startFace;$('cancelFace').onclick=cancelFace;
+window.addEventListener('keydown',e=>{if(e.key==='Escape')cancelFace();});
+const raycaster=new THREE.Raycaster();
+function hitFace(event){const r=renderer.domElement.getBoundingClientRect();scene.updateMatrixWorld(true);raycaster.setFromCamera(new THREE.Vector2((event.clientX-r.left)/r.width*2-1,1-(event.clientY-r.top)/r.height*2),camera);return raycaster.intersectObject(mesh,false)[0];}
+function highlightFace(hit){
+ if(!hit){clearFaceOverlay();return;}if(hit.faceIndex===lastHoverFace)return;clearFaceOverlay();lastHoverFace=hit.faceIndex;
+ const pos=mesh.geometry.attributes.position,normal=hit.face.normal.clone(),anchor=new THREE.Vector3().fromBufferAttribute(pos,hit.face.a),picked=[];
+ const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3(),n=new THREE.Vector3(),u=new THREE.Vector3();
+ for(let i=0;i<pos.count;i+=3){a.fromBufferAttribute(pos,i);b.fromBufferAttribute(pos,i+1);c.fromBufferAttribute(pos,i+2);n.subVectors(b,a).cross(u.subVectors(c,a)).normalize();if(n.dot(normal)>.9999&&Math.abs(u.subVectors(a,anchor).dot(normal))<.01)picked.push(...a,...b,...c);}
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(picked,3));faceOverlay=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:'#d3b878',transparent:true,opacity:.7,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2}));faceOverlay.matrixAutoUpdate=false;faceOverlay.matrix.copy(mesh.matrix);stage.add(faceOverlay);
+}
+let pointerStart=null;
+renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});
+renderer.domElement.addEventListener('pointermove',e=>{if(selectingFace&&mesh&&!busy)highlightFace(hitFace(e));});
+renderer.domElement.addEventListener('pointerup',e=>{
+ if(!selectingFace||!mesh||busy||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>5)return;
+ const hit=hitFace(e);if(!hit)return;
+ mesh.updateMatrix();const normal=hit.face.normal.clone().applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(mesh.matrix)).normalize();
+ const rotation=new THREE.Quaternion().setFromUnitVectors(normal,new THREE.Vector3(0,0,-1)).multiply(mesh.quaternion);
+ const angles=new THREE.Euler().setFromQuaternion(rotation,'XYZ');
+ ['rx','ry','rz'].forEach((id,i)=>$(id).value=THREE.MathUtils.radToDeg([angles.x,angles.y,angles.z][i]).toFixed(5));
+ cancelFace();transform();$('task2').classList.add('done');status('已將選取面轉向並貼齊底板；原切片已清除，請重新切片。');
+});
+const originalSetModel=setModel;setModel=function(g,name){cancelFace();originalSetModel(g,name);};
+const originalSlice=$('slice').onclick;$('slice').onclick=()=>{cancelFace();updateOverhang();return originalSlice();};
+const originalImport=importFile;
+importFile=async function(file){
+ if(!file||busy)return;if(!/\.3mf$/i.test(file.name))return originalImport(file);
+ try{if(file.size>30_000_000)throw Error('專案超過 30 MB');const p=readProject(await file.arrayBuffer()),g=loader.parse(p.stl);if(!g.attributes.position.array.every(Number.isFinite))throw Error('模型座標無效');setModel(g,p.name);
+  for(const [id,v] of Object.entries(p.transform))if(['scale','rx','ry','rz','px','py'].includes(id))$(id).value=v;
+  for(const id of ['layer','infill','walls'])$(id).value=p.settings[id];for(const id of ['support','brim'])$(id).checked=p.settings[id];transform();$('presetName').textContent='已還原 3MF 專案設定';status('專案已開啟：模型、位置、方向及列印設定已還原，可以繼續調整。');
+ }catch(e){status(e.message);}finally{$('file').value='';}
+};
+$('saveProject').onclick=async()=>{
+ if(!mesh||busy||!valid)return;cancelFace();busy=true;lockInputs(true);updateButton();
+ try{
+  const response=await fetch('./a2l-profile.json');if(!response.ok)throw Error('A2L 設定檔載入失敗');const profile=await response.json();
+  const settings={layer:+$('layer').value,infill:+$('infill').value,walls:+$('walls').value,support:$('support').checked,brim:$('brim').checked};
+  if(![.12,.16,.2,.24,.28].includes(settings.layer)||!Number.isInteger(settings.infill)||settings.infill<0||settings.infill>80||!Number.isInteger(settings.walls)||settings.walls<2||settings.walls>6)throw Error('請先修正層高、填充率或牆壁圈數。');
+  const transform=Object.fromEntries(['scale','rx','ry','rz','px','py'].map(id=>[id,+$(id).value]));mesh.updateMatrix();const m=mesh.matrix.elements,matrix=[m[0],m[1],m[2],m[4],m[5],m[6],m[8],m[9],m[10],m[12],m[13],m[14]];
+  const wasVisible=mesh.visible,previewVisible=previewLines?.visible;mesh.visible=true;if(previewLines)previewLines.visible=false;let png;try{png=thumbnail();}finally{mesh.visible=wasVisible;if(previewLines)previewLines.visible=previewVisible;}
+  const bytes=projectArchive({profile,settings,stl:binarySTL(false),png,name:modelName,transform,matrix}),url=URL.createObjectURL(new Blob([bytes],{type:'model/3mf'}));
+  const a=document.createElement('a');a.href=url;a.download=modelName.replace(/\.(stl|3mf)$/i,'')+'_專案.3mf';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);status('已儲存可編輯 3MF 專案：可在本網站重新開啟，或在 Bambu Studio 選擇「開啟專案」。');
+ }catch(e){status('專案未儲存：'+e.message);}finally{busy=false;lockInputs(false);updateButton();}
+};
+updateOverhang();
